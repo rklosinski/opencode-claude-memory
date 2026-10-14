@@ -208,6 +208,11 @@ export class ExtractionCoordinator {
     return undefined
   }
 
+  // True while `sessionID` is an extraction fork (memory_save's similar-name check applies only there).
+  isExtractionFork(sessionID: string | undefined): boolean {
+    return sessionID !== undefined && this.savedByFork.has(sessionID)
+  }
+
   // memory_delete reports every deletion; only the auto-dream fork's are kept (for its summary log).
   recordDelete(sessionID: string | undefined, fileName: string): void {
     if (sessionID) this.autodream?.record(sessionID, "deleted", fileName)

@@ -2,7 +2,15 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { buildMemoryTools } from "../src/host/v1/tools.js"
-import { formatMemorySaveResult, memoryListTitle, memorySaveTitle, memorySearchTitle } from "../src/tools.js"
+import {
+  formatMemoryRead,
+  formatMemorySaveResult,
+  memoryListTitle,
+  memorySaveTitle,
+  memorySearchTitle,
+  similarMemoryNames,
+  stripMemoryReadHeader,
+} from "../src/tools.js"
 import { cleanupTempDirs, makeStore, resultOutput, resultTitle, toolCtx } from "./helpers/index.js"
 
 afterEach(cleanupTempDirs)
@@ -66,6 +74,9 @@ describe("buildMemoryTools", () => {
       },
       recordDelete(sessionID: string | undefined, fileName: string) {
         deletes.push([sessionID, fileName])
+      },
+      isExtractionFork(sessionID: string | undefined) {
+        return sessionID === "fork"
       },
     }
     return { store, saves, deletes, tools: buildMemoryTools(store, extraction) }
@@ -204,5 +215,81 @@ describe("buildMemoryTools", () => {
     expect(
       resultOutput((await tools.memory_delete?.execute({ file_name: "team/conventions.md" }, ctx)) as never),
     ).toContain("deleted")
+  })
+})
+
+describe("stripMemoryReadHeader", () => {
+  const entry = { name: "latch", type: "project", description: "SR latch", body: "## Circuit\n\nCD4013." }
+
+  test("removes the header memory_read puts above the body, however many merges stacked it", () => {
+    expect(stripMemoryReadHeader(formatMemoryRead(entry))).toBe("## Circuit\n\nCD4013.")
+    const twice = formatMemoryRead({ ...entry, body: formatMemoryRead(entry) })
+    expect(stripMemoryReadHeader(twice)).toBe("## Circuit\n\nCD4013.")
+  })
+
+  test("leaves ordinary headings and Type/Description text alone", () => {
+    expect(stripMemoryReadHeader("# Latch\n\nBody")).toBe("# Latch\n\nBody")
+    expect(stripMemoryReadHeader("Intro\n# latch\n**Type:** x\n**Description:** y\n")).toStartWith("Intro")
+  })
+})
+
+describe("similarMemoryNames", () => {
+  test("matches slugs that share most of their words", () => {
+    const existing = ["safe-temp-latch-design.md", "cd4013-datasheet.md", "octopart-nexar-api-unavailable.md"]
+    expect(similarMemoryNames("safe-temp-latch-circuit", existing)).toEqual(["safe-temp-latch-design.md"])
+    expect(similarMemoryNames("cd4013-pinout", existing)).toEqual([])
+    expect(similarMemoryNames("user-role", ["user-preferences.md"])).toEqual([])
+  })
+})
+
+describe("memory_save quality guards", () => {
+  function setup() {
+    const store = makeStore()
+    const extraction = {
+      recordSave: () => undefined,
+      recordDelete: () => {},
+      isExtractionFork: (sessionID: string | undefined) => sessionID === "fork",
+    }
+    return { store, tools: buildMemoryTools(store, extraction) }
+  }
+  const args = (fileName: string, content = "Body.") => ({
+    file_name: fileName,
+    name: fileName,
+    description: `about ${fileName}`,
+    type: "project",
+    content,
+  })
+
+  test("stores a re-saved memory without the memory_read header", async () => {
+    const { tools, store } = setup()
+    await tools.memory_save?.execute(args("latch"), toolCtx({ sessionID: "main" }))
+    const read = resultOutput((await tools.memory_read?.execute({ file_name: "latch" }, toolCtx())) as never)
+    await tools.memory_save?.execute(args("latch", `${read}\n\nMore.`), toolCtx({ sessionID: "main" }))
+    expect(store.read("latch")?.body.trim()).toBe("Body.\n\nMore.")
+  })
+
+  test("an extraction fork's new file with a similar name is turned back once, then allowed", async () => {
+    const { tools, store } = setup()
+    await tools.memory_save?.execute(args("safe-temp-latch-design"), toolCtx({ sessionID: "main" }))
+    const first = await tools.memory_save?.execute(args("safe-temp-latch-circuit"), toolCtx({ sessionID: "fork" }))
+    expect(resultOutput(first as never)).toStartWith('Not saved: "safe-temp-latch-circuit"')
+    expect(resultOutput(first as never)).toContain('"safe-temp-latch-design.md"')
+    expect(store.read("safe-temp-latch-circuit")).toBeNull()
+    const again = await tools.memory_save?.execute(args("safe-temp-latch-circuit"), toolCtx({ sessionID: "fork" }))
+    expect(resultOutput(again as never)).toStartWith("Memory saved to ")
+  })
+
+  test("updates, the main agent, and dissimilar names are never turned back", async () => {
+    const { tools } = setup()
+    await tools.memory_save?.execute(args("safe-temp-latch-design"), toolCtx({ sessionID: "main" }))
+    const update = await tools.memory_save?.execute(
+      args("safe-temp-latch-design", "New."),
+      toolCtx({ sessionID: "fork" }),
+    )
+    expect(resultOutput(update as never)).toStartWith("Memory saved to ")
+    const main = await tools.memory_save?.execute(args("safe-temp-latch-circuit"), toolCtx({ sessionID: "main" }))
+    expect(resultOutput(main as never)).toStartWith("Memory saved to ")
+    const other = await tools.memory_save?.execute(args("cd4013-datasheet"), toolCtx({ sessionID: "fork" }))
+    expect(resultOutput(other as never)).toStartWith("Memory saved to ")
   })
 })
