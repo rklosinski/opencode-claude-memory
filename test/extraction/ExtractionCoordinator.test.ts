@@ -438,6 +438,14 @@ describe("pure helpers", () => {
       "",
     )
   })
+
+  test("buildConversationForExtraction cuts each tool output to maxToolOutputChars", () => {
+    const output = "0123456789".repeat(100)
+    const turn = [message("assistant", [textPart("dump"), toolPart("read", "completed", output)])]
+    expect(buildConversationForExtraction(turn, 100_000)).toContain(`_[tool read: ${output.slice(0, 300)}…]_`)
+    expect(buildConversationForExtraction(turn, 100_000, 50)).toContain(`_[tool read: ${output.slice(0, 50)}…]_`)
+    expect(buildConversationForExtraction(turn, 100_000, 5_000)).toContain(`_[tool read: ${output}]_`)
+  })
 })
 
 // ─── regressions from the v2 review ──────────────────────────────────────────

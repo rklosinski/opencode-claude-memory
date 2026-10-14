@@ -11,7 +11,12 @@ import type { OwnedSessions } from "../util/ownedSessions.js"
 import { TimeoutError } from "../util/timeout.js"
 import { AutoDream } from "./autodream.js"
 import { MaintenanceLock } from "./lock.js"
-import { buildExtractionSystemPrompt, buildExtractionUserMessage, formatLocalDate } from "./prompts.js"
+import {
+  buildExtractionSystemPrompt,
+  buildExtractionUserMessage,
+  buildExtractPrompt,
+  formatLocalDate,
+} from "./prompts.js"
 import { ExtractionStateStore, migrateLegacyAutodreamState, type SessionExtractionState } from "./state.js"
 
 export { SDK_READ_TIMEOUT_MS }
@@ -72,7 +77,11 @@ export function hasExtractableUserMessage(messages: readonly TranscriptMessage[]
   })
 }
 
-export function buildConversationForExtraction(messages: readonly TranscriptMessage[], maxChars: number): string {
+export function buildConversationForExtraction(
+  messages: readonly TranscriptMessage[],
+  maxChars: number,
+  maxToolOutputChars = 300,
+): string {
   const lines: string[] = []
   for (const message of messages) {
     const role = roleOf(message)
@@ -81,7 +90,10 @@ export function buildConversationForExtraction(messages: readonly TranscriptMess
       if (p.type === "text" && typeof p.text === "string" && !p.synthetic) {
         lines.push(`### ${role === "user" ? "User" : "Assistant"}\n${p.text}`)
       } else if (p.type === "tool" && p.tool && p.state?.status === "completed" && typeof p.state.output === "string") {
-        const out = p.state.output.length > 300 ? `${p.state.output.slice(0, 300)}…` : p.state.output
+        const out =
+          p.state.output.length > maxToolOutputChars
+            ? `${p.state.output.slice(0, maxToolOutputChars)}…`
+            : p.state.output
         lines.push(`_[tool ${p.tool}: ${out}]_`)
       }
     }
@@ -370,8 +382,11 @@ export class ExtractionCoordinator {
       }
 
       if (
-        buildConversationForExtraction(snapshot.fresh, config.extract.maxConversationChars).trim().length <
-        MIN_CONVERSATION_CHARS
+        buildConversationForExtraction(
+          snapshot.fresh,
+          config.extract.maxConversationChars,
+          config.extract.maxToolOutputChars,
+        ).trim().length < MIN_CONVERSATION_CHARS
       ) {
         this.advance(sessionID, snapshot)
         return
@@ -391,7 +406,11 @@ export class ExtractionCoordinator {
         const previous = this.state.getSession(sessionID)
         snapshot = this.snapshot(messages, previous)
         if (!snapshot) return
-        const conversation = buildConversationForExtraction(snapshot.fresh, config.extract.maxConversationChars)
+        const conversation = buildConversationForExtraction(
+          snapshot.fresh,
+          config.extract.maxConversationChars,
+          config.extract.maxToolOutputChars,
+        )
         if (conversation.trim().length < MIN_CONVERSATION_CHARS) {
           this.advance(sessionID, snapshot)
           return
@@ -408,7 +427,11 @@ export class ExtractionCoordinator {
             parentSessionID: sessionID,
             title: EXTRACTION_TITLE,
             agent: config.agents.extract,
-            system: buildExtractionSystemPrompt(formatMemoryManifest(memories), formatMemoryManifest(savedDuring)),
+            system: buildExtractionSystemPrompt(
+              formatMemoryManifest(memories),
+              formatMemoryManifest(savedDuring),
+              buildExtractPrompt(config.extract.guidance),
+            ),
             text: buildExtractionUserMessage(conversation, formatLocalDate(this.now())),
             timeoutMs: config.extract.timeoutMs,
             onCreated: (forkID) => {

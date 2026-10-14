@@ -3,9 +3,11 @@
 const SAVED_DURING_CONVERSATION_TITLE = "Memories already saved during this conversation"
 export const EXTRACT_SAVED_DURING_CONVERSATION_HEADING = `## ${SAVED_DURING_CONVERSATION_TITLE}`
 
-export const EXTRACT_PROMPT = `You are now acting as the memory extraction subagent. The conversation below is reviewed for anything worth remembering for future sessions.
-
-## What to save
+// What is worth saving, what is not, and how much: the part of the extraction prompt that
+// `extract.guidance` / `extract.guidanceFile` replace. Everything else in the prompt (dates, the
+// memory_save contract, the rules for existing memories) stays, because forks depend on it to write
+// valid files and to leave unrelated memories alone.
+export const EXTRACT_DEFAULT_GUIDANCE = `## What to save
 
 Use the \`memory_save\` tool to persist memories. There are four types:
 
@@ -13,10 +15,6 @@ Use the \`memory_save\` tool to persist memories. There are four types:
 2. **feedback** — Guidance on how to work: corrections ("don't do X"), confirmations ("yes, keep doing that"), approach preferences. Include *why* so edge cases can be judged.
 3. **project** — Ongoing work context: goals, deadlines, initiatives, decisions, bugs. NOT derivable from code/git.
 4. **reference** — Pointers to external resources: URLs, tool names, where to find information outside the codebase.
-
-## Dates
-
-Convert a relative date ("Thursday", "tomorrow") to an absolute one only when it can be worked out exactly from today's date, which is given with the transcript. When it cannot ("last week", "recently", "a while ago"), keep the user's own wording, anchored to today's date (e.g. "last week, as of 2026-03-05"). Never invent, estimate or guess a date.
 
 ## What NOT to save
 
@@ -26,6 +24,20 @@ Convert a relative date ("Thursday", "tomorrow") to an absolute one only when it
 - Anything already in AGENTS.md / project config files
 - Ephemeral task details or current conversation context
 - Information that is already covered by an existing memory (see the list below) unless you are updating it with something new
+
+## How much to save
+
+Be selective: 0-3 memories per session is typical. Quality over quantity.`
+
+// The extraction fork's instructions with `guidance` in place of the default what-to-save policy.
+export function buildExtractPrompt(guidance: string = EXTRACT_DEFAULT_GUIDANCE): string {
+  return `You are now acting as the memory extraction subagent. The conversation below is reviewed for anything worth remembering for future sessions.
+
+${guidance.trim()}
+
+## Dates
+
+Convert a relative date ("Thursday", "tomorrow") to an absolute one only when it can be worked out exactly from today's date, which is given with the transcript. When it cannot ("last week", "recently", "a while ago"), keep the user's own wording, anchored to today's date (e.g. "last week, as of 2026-03-05"). Never invent, estimate or guess a date.
 
 ## How to save
 
@@ -45,9 +57,11 @@ For each memory worth saving, call \`memory_save\` with:
 4. Memories listed under "${SAVED_DURING_CONVERSATION_TITLE}" (when that list is present) were already written while this conversation ran (usually by the main agent): do not create another memory covering the same thing, and leave them alone unless the transcript contains information they are missing.
 5. Save each distinct memory as a separate entry
 6. If the conversation was trivial (e.g., just "hello" or a quick lookup), save nothing — that's fine
-7. Be selective: 0-3 memories per session is typical. Quality over quantity.
-8. Do NOT save a memory about the extraction process itself.
-9. Each \`memory_save\` call persists immediately and its result lists everything saved so far in this run. Never save the same \`file_name\` twice in one run. When nothing else is worth saving, stop calling tools and reply with a one-line summary.`
+7. Do NOT save a memory about the extraction process itself.
+8. Each \`memory_save\` call persists immediately and its result lists everything saved so far in this run. Never save the same \`file_name\` twice in one run. When nothing else is worth saving, stop calling tools and reply with a one-line summary.`
+}
+
+export const EXTRACT_PROMPT = buildExtractPrompt()
 
 export const EXTRACT_EXISTING_MEMORIES_HEADING = "## Existing memories"
 
@@ -76,9 +90,13 @@ export function buildExtractionUserMessage(conversation: string, today: string):
 
 // `savedDuringConversation` is the manifest of the memories written since the extracted slice began
 // (see ExtractionCoordinator), so the fork does not duplicate what the main agent already saved.
-export function buildExtractionSystemPrompt(manifest: string, savedDuringConversation = ""): string {
+export function buildExtractionSystemPrompt(
+  manifest: string,
+  savedDuringConversation = "",
+  extractPrompt: string = EXTRACT_PROMPT,
+): string {
   const inventory = manifest.trim() ? manifest.trim() : "(none yet)"
-  const prompt = `${EXTRACT_PROMPT}\n\n${EXTRACT_EXISTING_MEMORIES_HEADING}\n\n${inventory}`
+  const prompt = `${extractPrompt}\n\n${EXTRACT_EXISTING_MEMORIES_HEADING}\n\n${inventory}`
   const saved = savedDuringConversation.trim()
   return saved ? `${prompt}\n\n${EXTRACT_SAVED_DURING_CONVERSATION_HEADING}\n\n${saved}` : prompt
 }
