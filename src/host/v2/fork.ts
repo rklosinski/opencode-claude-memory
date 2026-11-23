@@ -39,6 +39,8 @@ export type V2SessionApi = {
     model?: ModelRef
     permissions?: PermissionRule[]
   }): Promise<{ id: string }>
+  // The session's selected model (switched by `/model`). Optional so older hosts and mocks still fit.
+  get?(input: { sessionID: string }): Promise<{ model?: ModelRef } | undefined>
   prompt(input: { sessionID: string; text: string }): Promise<unknown>
   wait(input: { sessionID: string }): Promise<unknown>
   context(input: { sessionID: string }): Promise<readonly V2Message[]>

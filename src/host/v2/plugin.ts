@@ -19,7 +19,7 @@ import { OwnedSessions } from "../../util/ownedSessions.js"
 import { withDeadline } from "../../util/timeout.js"
 import { applyMemoryAgents, type PermissionRule, sandboxRules } from "./agents.js"
 import { consumeEvents, V2SessionEvents } from "./events.js"
-import type { V2SessionApi } from "./fork.js"
+import type { ModelRef as V2ModelRef, V2SessionApi } from "./fork.js"
 import { V2Host } from "./host.js"
 import { createFileLogger } from "./log.js"
 
@@ -136,6 +136,7 @@ export const createV2Setup =
             return
           }
           if (owned.has(sessionID)) return
+          host.noteModel(sessionID, event.model as V2ModelRef | undefined)
           events.track(sessionID)
           // Everything recalled in this session so far, not only this turn's selection: the system
           // prompt is rebuilt for every request, so a memory shown once would otherwise vanish after
