@@ -1,4 +1,5 @@
-import { describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, test } from "bun:test"
+import { writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import {
@@ -8,6 +9,9 @@ import {
   parseConfig,
   resolveClaudeConfigDir,
 } from "../src/config.js"
+import { cleanupTempDirs, tempDir } from "./helpers/index.js"
+
+afterEach(cleanupTempDirs)
 
 describe("parseConfig", () => {
   test("applies defaults when no options are given", () => {
@@ -17,6 +21,7 @@ describe("parseConfig", () => {
       timeoutMs: 120_000,
       debounceMs: 10_000,
       maxConversationChars: 60_000,
+      maxToolOutputChars: 300,
       catchUpLimit: 5,
     })
     expect(config.autodream).toEqual({ enabled: true, minHours: 24, minSessions: 5, timeoutMs: 300_000 })
@@ -48,6 +53,37 @@ describe("parseConfig", () => {
     expect(() => parseConfig({ extract: { timeoutMs: 2_147_483_648 } }, {})).toThrow(/extract\.timeoutMs/)
     expect(() => parseConfig({ recall: { maxMemories: 21 } }, {})).toThrow(/recall\.maxMemories/)
     expect(() => parseConfig({ autodream: { minSessions: 0 } }, {})).toThrow(/autodream\.minSessions/)
+    expect(() => parseConfig({ extract: { maxToolOutputChars: 0 } }, {})).toThrow(/extract\.maxToolOutputChars/)
+  })
+
+  test("keeps inline extraction guidance", () => {
+    const config = parseConfig({ extract: { guidance: "  ## What to save\n\nDecisions.  " } }, {})
+    expect(config.extract.guidance).toBe("## What to save\n\nDecisions.")
+  })
+
+  test("reads extraction guidance from an absolute or ~/ file", () => {
+    const home = tempDir("ocm-home-")
+    writeFileSync(join(home, "guidance.md"), "\n## What to save\n\nDecisions and their reasons.\n")
+    const fromHome = parseConfig({ extract: { guidanceFile: "~/guidance.md" } }, {}, home)
+    expect(fromHome.extract.guidance).toBe("## What to save\n\nDecisions and their reasons.")
+    const absolute = parseConfig({ extract: { guidanceFile: join(home, "guidance.md") } }, {}, home)
+    expect(absolute.extract.guidance).toBe(fromHome.extract.guidance)
+  })
+
+  test("rejects unusable extraction guidance files", () => {
+    const home = tempDir("ocm-home-")
+    writeFileSync(join(home, "empty.md"), "  \n")
+    expect(() => parseConfig({ extract: { guidanceFile: "guidance.md" } }, {}, home)).toThrow(/absolute or ~\/ path/)
+    expect(() => parseConfig({ extract: { guidanceFile: "~/missing.md" } }, {}, home)).toThrow(/cannot read/)
+    expect(() => parseConfig({ extract: { guidanceFile: "~/empty.md" } }, {}, home)).toThrow(/is empty/)
+    expect(() => parseConfig({ extract: { guidanceFile: "~/missing.md" } }, {}, home)).toThrow(MemoryConfigError)
+  })
+
+  test("rejects guidance and guidanceFile together, and empty guidance", () => {
+    expect(() => parseConfig({ extract: { guidance: "x", guidanceFile: "/tmp/x.md" } }, {})).toThrow(
+      /either guidance or guidanceFile/,
+    )
+    expect(() => parseConfig({ extract: { guidance: "   " } }, {})).toThrow(/extract\.guidance/)
   })
 
   test("only reads CLAUDE_CONFIG_DIR from the environment", () => {

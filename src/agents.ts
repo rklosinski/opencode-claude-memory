@@ -24,7 +24,12 @@ export type MemoryAgentDefaults = {
   allowedTools: readonly MemoryToolName[]
 }
 
-export function memoryAgentDefaults(agents: MemoryAgents, readOnly = false): Record<string, MemoryAgentDefaults> {
+// `extractPrompt` is the extraction instructions with any `extract.guidance` applied (buildExtractPrompt).
+export function memoryAgentDefaults(
+  agents: MemoryAgents,
+  readOnly = false,
+  extractPrompt: string = EXTRACT_PROMPT,
+): Record<string, MemoryAgentDefaults> {
   const recall: MemoryAgentDefaults = {
     temperature: 0,
     prompt: SELECT_MEMORIES_SYSTEM_PROMPT,
@@ -35,7 +40,7 @@ export function memoryAgentDefaults(agents: MemoryAgents, readOnly = false): Rec
   return {
     [agents.recall]: recall,
     [agents.extract]: {
-      prompt: EXTRACT_PROMPT,
+      prompt: extractPrompt,
       // A legitimate extraction is a handful of memory_save calls; the step cap terminates a model
       // that keeps re-saving the same files instead of letting it spin until the timeout (#35).
       steps: 30,

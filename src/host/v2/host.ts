@@ -15,6 +15,9 @@ import { forkSessionRules, PERMISSIONS_PROBE_AGENT } from "./agents.js"
 import { type ModelRef, type PermissionRule, runV2Fork, type V2Message, type V2SessionApi } from "./fork.js"
 import { toTranscript } from "./transcript.js"
 
+// Sessions whose latest model is remembered; the oldest is dropped past this.
+const SESSION_MODELS_MAX = 200
+
 export type V2AgentInfo = { model?: ModelRef; permissions?: readonly PermissionRule[] }
 
 export type V2HostOptions = {
@@ -35,8 +38,68 @@ function bounded<T>(what: string, timeoutMs: number, call: () => Promise<T>): Pr
 export class V2Host implements MemoryHost {
   // Per-fork system prompt, injected by the context hook (V2 prompts carry no system field).
   private readonly forkSystems = new Map<string, string>()
+  // Model of each session's latest request (from the context hook), and of the latest request in
+  // any session. An unpinned memory agent follows the session it works for, so switching models
+  // mid-session (`/model`) also switches extraction and recall. Without either, opencode would
+  // fall back to its own default provider instead of the model in use.
+  private readonly sessionModels = new Map<string, ModelRef>()
+  private lastModel: ModelRef | undefined
 
   constructor(private readonly options: V2HostOptions) {}
+
+  noteModel(sessionID: string, model: ModelRef | undefined): void {
+    if (!sessionID || !model?.id || !model.providerID) return
+    const ref: ModelRef = { id: model.id, providerID: model.providerID }
+    if (model.variant) ref.variant = model.variant
+    this.sessionModels.delete(sessionID)
+    this.sessionModels.set(sessionID, ref)
+    if (this.sessionModels.size > SESSION_MODELS_MAX) {
+      const oldest = this.sessionModels.keys().next().value
+      if (oldest !== undefined) this.sessionModels.delete(oldest)
+    }
+    this.lastModel = ref
+  }
+
+  // The agent's own pin wins; otherwise the parent session's selected model (session.get, so a
+  // `/model` switch counts at once), then the model of its latest request, then the latest one seen.
+  private async modelFor(
+    agentName: string,
+    pinned: ModelRef | undefined,
+    parentSessionID?: string,
+  ): Promise<ModelRef | undefined> {
+    if (pinned) return pinned
+    let followed = parentSessionID ? await this.selectedModel(parentSessionID) : undefined
+    let source = "session"
+    if (!followed && parentSessionID) {
+      followed = this.sessionModels.get(parentSessionID)
+      source = "last request"
+    }
+    if (!followed) {
+      followed = this.lastModel
+      source = "latest seen"
+    }
+    this.options.log?.("debug", "Memory agent follows the session model", {
+      agent: agentName,
+      parentSessionID,
+      model: followed ? `${followed.providerID}/${followed.id}` : "(host default)",
+      ...(followed ? { source } : {}),
+    })
+    return followed
+  }
+
+  private async selectedModel(sessionID: string): Promise<ModelRef | undefined> {
+    const get = this.options.session.get
+    if (!get) return undefined
+    try {
+      const info = await bounded("session.get", SDK_READ_TIMEOUT_MS, () =>
+        get.call(this.options.session, { sessionID }),
+      )
+      const model = info?.model
+      return model?.id && model.providerID ? model : undefined
+    } catch {
+      return undefined
+    }
+  }
 
   systemFor(sessionID: string): string | undefined {
     return this.forkSystems.get(sessionID)
@@ -63,9 +126,10 @@ export class V2Host implements MemoryHost {
   async generate(input: GenerateInput): Promise<string> {
     const result = await bounded("generate.text", input.timeoutMs, async () => {
       const agent = await this.agent(input.agent)
+      const model = await this.modelFor(input.agent, agent?.model, input.parentSessionID)
       return this.options.generateText({
         prompt: buildGeneratePrompt(input),
-        ...(agent?.model ? { model: agent.model } : {}),
+        ...(model ? { model } : {}),
       })
     })
     return typeof result?.text === "string" ? result.text : ""
@@ -96,10 +160,11 @@ export class V2Host implements MemoryHost {
       )
     }
     this.options.log?.("debug", "Memory fork session permissions", { agent: input.agent, permissions })
+    const model = await this.modelFor(input.agent, agent?.model, input.parentSessionID)
     return runV2Fork(this.options.session, {
       ...input,
       permissions,
-      ...(agent?.model ? { model: agent.model } : {}),
+      ...(model ? { model } : {}),
       onCreated: (id) => {
         if (input.system) this.forkSystems.set(id, input.system)
         input.onCreated?.(id)

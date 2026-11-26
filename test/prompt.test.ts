@@ -2,6 +2,8 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { writeFileSync } from "node:fs"
 import {
   buildExtractionSystemPrompt,
+  buildExtractPrompt,
+  EXTRACT_DEFAULT_GUIDANCE,
   EXTRACT_PROMPT,
   EXTRACT_SAVED_DURING_CONVERSATION_HEADING,
   formatLocalDate,
@@ -139,6 +141,35 @@ describe("memory edits nobody asked for (#49)", () => {
     expect(buildExtractionSystemPrompt("- [user] a.md (x): a")).not.toContain(EXTRACT_SAVED_DURING_CONVERSATION_HEADING)
     const prompt = buildExtractionSystemPrompt("- [user] a.md (x): a", "- [user] a.md (x): a")
     expect(prompt.endsWith(`${EXTRACT_SAVED_DURING_CONVERSATION_HEADING}\n\n- [user] a.md (x): a`)).toBe(true)
+  })
+
+  test("custom guidance replaces only the what-to-save policy", () => {
+    const guidance = "## What to save\n\nDesign decisions with their reasons, in full detail."
+    const prompt = buildExtractPrompt(guidance)
+    expect(prompt).toContain(guidance)
+    expect(prompt).not.toContain("## What NOT to save")
+    expect(prompt).not.toContain("0-3 memories per session")
+    expect(prompt).not.toContain("Debugging solutions — the fix is in the code")
+    // The memory_save contract and the rules that protect existing memories stay.
+    expect(prompt).toContain("`name`: the same kebab-case slug")
+    expect(prompt).toContain("`type`: one of user, feedback, project, reference")
+    expect(prompt).toContain("Never edit memories about unrelated topics")
+    expect(prompt).toContain("Never invent, estimate or guess a date.")
+    expect(prompt).toContain(EXTRACT_SAVED_DURING_CONVERSATION_HEADING.replace("## ", ""))
+  })
+
+  test("the default extraction prompt keeps the stock policy", () => {
+    expect(EXTRACT_PROMPT).toBe(buildExtractPrompt())
+    expect(EXTRACT_PROMPT).toContain(EXTRACT_DEFAULT_GUIDANCE)
+    expect(EXTRACT_PROMPT).toContain("Be selective: 0-3 memories per session is typical. Quality over quantity.")
+    expect(EXTRACT_PROMPT).toContain("Debugging solutions — the fix is in the code")
+  })
+
+  test("the fork's system prompt carries custom guidance", () => {
+    const prompt = buildExtractionSystemPrompt("- [user] a.md (x): a", "", buildExtractPrompt("## What to save\n\nX."))
+    expect(prompt).toContain("## What to save\n\nX.")
+    expect(prompt).not.toContain("## What NOT to save")
+    expect(prompt.endsWith("## Existing memories\n\n- [user] a.md (x): a")).toBe(true)
   })
 
   test("formatLocalDate renders the local calendar day", () => {

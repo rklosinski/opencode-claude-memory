@@ -9,7 +9,7 @@ export type MemoryTools = NonNullable<Hooks["tool"]>
 
 export function buildMemoryTools(
   store: MemoryStore,
-  extraction: Pick<ExtractionCoordinator, "recordSave" | "recordDelete">,
+  extraction: Pick<ExtractionCoordinator, "recordSave" | "recordDelete" | "isExtractionFork">,
 ): MemoryTools {
   const tools: Record<string, unknown> = {}
   for (const spec of buildMemoryToolSpecs(store, extraction)) {

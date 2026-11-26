@@ -1,6 +1,7 @@
 // V1 (`server`) entry: OpenCode 1.18 hooks → host-independent coordinators.
 import type { Plugin } from "@opencode-ai/plugin"
 import { parseConfig } from "../../config.js"
+import { buildExtractPrompt } from "../../extraction/prompts.js"
 import { buildMemorySystemPrompt } from "../../prompt/systemPrompt.js"
 import { formatRecalledMemories } from "../../recall/format.js"
 import { MemoryStore } from "../../store/MemoryStore.js"
@@ -23,7 +24,7 @@ export const createMemoryPlugin =
     const store = new MemoryStore(resolveMemoryRoot(worktree, dir), config)
     const log = createLogger(client, dir)
     const owned = new OwnedSessions()
-    const agents = new AgentRegistry(config.agents, config.readOnly)
+    const agents = new AgentRegistry(config.agents, config.readOnly, buildExtractPrompt(config.extract.guidance))
     const host = client
       ? createV1Host({ client, directory: dir, toolsFor: (name) => agents.toolsFor(name) })
       : undefined

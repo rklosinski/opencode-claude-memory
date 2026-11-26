@@ -1,6 +1,8 @@
+import { readFileSync } from "node:fs"
 import { homedir } from "node:os"
-import { join } from "node:path"
+import { isAbsolute, join } from "node:path"
 import { z } from "zod"
+import { getErrorMessage } from "./util/log.js"
 
 const MAX_TIMER_DELAY_MS = 2_147_483_647
 
@@ -17,9 +19,19 @@ export const MemoryOptionsSchema = z
         timeoutMs: timeoutMs(120_000),
         debounceMs: z.number().int().nonnegative().max(MAX_TIMER_DELAY_MS).default(10_000),
         maxConversationChars: z.number().int().positive().default(60_000),
+        // Each completed tool call enters the transcript with its output cut to this many characters.
+        maxToolOutputChars: z.number().int().positive().default(300),
         catchUpLimit: z.number().int().nonnegative().default(5),
+        // Replaces the fork's what-to-save policy (EXTRACT_DEFAULT_GUIDANCE), inline or from a file
+        // (absolute or `~/` path, read once at load). The memory_save contract and the rules for
+        // existing memories stay either way.
+        guidance: z.string().trim().min(1).optional(),
+        guidanceFile: z.string().trim().min(1).optional(),
       })
       .strict()
+      .refine((extract) => extract.guidance === undefined || extract.guidanceFile === undefined, {
+        message: "set either guidance or guidanceFile, not both",
+      })
       .default({}),
     autodream: z
       .object({
@@ -94,12 +106,40 @@ export function parseMemoryOptions(options: unknown): MemoryOptions {
   return result.data
 }
 
+// `extract.guidanceFile` is resolved here, once, so the rest of the plugin only ever sees
+// `extract.guidance`. Relative paths are rejected: the host's working directory is not stable.
+function readGuidanceFile(file: string, homeDir: string): string {
+  const path = file === "~" || file.startsWith("~/") ? join(homeDir, file.slice(1)) : file
+  if (!isAbsolute(path)) {
+    throw new MemoryConfigError(
+      `opencode-claude-memory: invalid plugin options (extract.guidanceFile: must be an absolute or ~/ path)`,
+    )
+  }
+  let text: string
+  try {
+    text = readFileSync(path, "utf-8").trim()
+  } catch (error) {
+    throw new MemoryConfigError(
+      `opencode-claude-memory: invalid plugin options (extract.guidanceFile: cannot read ${path}: ${getErrorMessage(error)})`,
+    )
+  }
+  if (!text) {
+    throw new MemoryConfigError(
+      `opencode-claude-memory: invalid plugin options (extract.guidanceFile: ${path} is empty)`,
+    )
+  }
+  return text
+}
+
 export function parseConfig(
   options: unknown,
   env: NodeJS.ProcessEnv = process.env,
   homeDir: string = homedir(),
 ): MemoryConfig {
   const parsed = parseMemoryOptions(options)
+  if (parsed.extract.guidanceFile !== undefined) {
+    parsed.extract.guidance = readGuidanceFile(parsed.extract.guidanceFile, homeDir)
+  }
   return {
     ...parsed,
     // Read-only switches off everything that writes, whatever the per-feature options say.

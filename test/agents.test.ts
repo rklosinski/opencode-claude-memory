@@ -1,10 +1,22 @@
 import { describe, expect, test } from "bun:test"
 import { MEMORY_AGENTS } from "../src/config.js"
-import { AUTODREAM_PROMPT, EXTRACT_PROMPT } from "../src/extraction/prompts.js"
+import { AUTODREAM_PROMPT, buildExtractPrompt, EXTRACT_PROMPT } from "../src/extraction/prompts.js"
 import { AgentRegistry, buildAgentDefaults, mergeAgentConfig } from "../src/host/v1/agents.js"
 import type { PluginConfig } from "../src/host/v1/sdk.js"
 
 describe("agent defaults", () => {
+  test("the extract agent's prompt carries custom guidance", () => {
+    const prompt = buildExtractPrompt("## What to save\n\nDecisions.")
+    expect(buildAgentDefaults(MEMORY_AGENTS, false, prompt)[MEMORY_AGENTS.extract]?.prompt).toBe(prompt)
+    expect(buildAgentDefaults(MEMORY_AGENTS, false, prompt)[MEMORY_AGENTS.dream]?.prompt).toBe(AUTODREAM_PROMPT)
+    expect(new AgentRegistry(MEMORY_AGENTS, false, prompt).toolsFor(MEMORY_AGENTS.extract)).toEqual({
+      "*": false,
+      memory_save: true,
+      memory_list: true,
+      memory_read: true,
+    })
+  })
+
   test("registers three hidden agents sandboxed to memory tools", () => {
     const defaults = buildAgentDefaults(MEMORY_AGENTS)
     expect(Object.keys(defaults).sort()).toEqual(

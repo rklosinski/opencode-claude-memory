@@ -106,6 +106,16 @@ describe("V2 setup: registration", () => {
     await cleanup()
   })
 
+  test("② extract.guidance becomes the extract agent's system prompt", async () => {
+    const mock = makeV2Context({ options: { extract: { guidance: "## What to save\n\nDecisions and reasons." } } })
+    const { cleanup } = await setupV2(mock)
+    const system = mock.agents.get(MEMORY_AGENTS.extract)?.system ?? ""
+    expect(system).toContain("## What to save\n\nDecisions and reasons.")
+    expect(system).not.toContain("## What NOT to save")
+    expect(system).toContain("Never edit memories about unrelated topics")
+    await cleanup()
+  })
+
   test("② a user-configured agent keeps its overrides, with the sandbox before the user's rules", async () => {
     const configured = defaultAgent(MEMORY_AGENTS.extract)
     configured.steps = 5

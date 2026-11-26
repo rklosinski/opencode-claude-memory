@@ -7,6 +7,7 @@ import { z } from "zod/v4"
 import { memoryAgentDefaults } from "../../agents.js"
 import { parseConfig } from "../../config.js"
 import { ExtractionCoordinator } from "../../extraction/ExtractionCoordinator.js"
+import { buildExtractPrompt } from "../../extraction/prompts.js"
 import { buildMemorySystemPrompt } from "../../prompt/systemPrompt.js"
 import { formatRecalledMemories } from "../../recall/format.js"
 import { RecallCoordinator } from "../../recall/RecallCoordinator.js"
@@ -18,7 +19,7 @@ import { OwnedSessions } from "../../util/ownedSessions.js"
 import { withDeadline } from "../../util/timeout.js"
 import { applyMemoryAgents, type PermissionRule, sandboxRules } from "./agents.js"
 import { consumeEvents, V2SessionEvents } from "./events.js"
-import type { V2SessionApi } from "./fork.js"
+import type { ModelRef as V2ModelRef, V2SessionApi } from "./fork.js"
 import { V2Host } from "./host.js"
 import { createFileLogger } from "./log.js"
 
@@ -61,7 +62,8 @@ export const createV2Setup =
     // The log file lives under the Claude config directory, which read-only mode never writes.
     const log: Logger = config.readOnly ? () => {} : createFileLogger(store.stateDir)
     const owned = new OwnedSessions()
-    const defaults = memoryAgentDefaults(config.agents, config.readOnly)
+    const extractPrompt = buildExtractPrompt(config.extract.guidance)
+    const defaults = memoryAgentDefaults(config.agents, config.readOnly, extractPrompt)
     const host = new V2Host({
       session: ctx.session as unknown as V2SessionApi,
       generateText: (input) => ctx.generate.text(input),
@@ -94,7 +96,7 @@ export const createV2Setup =
 
     const registerHooks = async (): Promise<void> => {
       await register("agent.transform", () =>
-        ctx.agent.transform((editor) => applyMemoryAgents(editor, config.agents, config.readOnly)),
+        ctx.agent.transform((editor) => applyMemoryAgents(editor, config.agents, config.readOnly, extractPrompt)),
       )
 
       await register("tool.transform", () =>
@@ -134,6 +136,7 @@ export const createV2Setup =
             return
           }
           if (owned.has(sessionID)) return
+          host.noteModel(sessionID, event.model as V2ModelRef | undefined)
           events.track(sessionID)
           // Everything recalled in this session so far, not only this turn's selection: the system
           // prompt is rebuilt for every request, so a memory shown once would otherwise vanish after

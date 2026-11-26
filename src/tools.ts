@@ -38,6 +38,42 @@ export function formatMemorySaveResult(outcome: SaveMemoryResult, savedThisRun?:
   )
 }
 
+// memory_read shows a memory as this header over its body. Models that merge an update read the
+// memory, edit the text and save all of it back, header included, so memory_save strips a leading
+// copy (repeated merges stack them) instead of storing the frontmatter a second time as body text.
+export function formatMemoryRead(entry: { name: string; type: string; description: string; body: string }): string {
+  return `# ${entry.name}\n**Type:** ${entry.type}\n**Description:** ${entry.description}\n\n${entry.body}`
+}
+
+const MEMORY_READ_HEADER = /^\s*# [^\n]*\n\*\*Type:\*\* [^\n]*\n\*\*Description:\*\* [^\n]*(?:\n|$)(?:[ \t]*\n)*/
+
+export function stripMemoryReadHeader(content: string): string {
+  let body = content
+  while (MEMORY_READ_HEADER.test(body)) body = body.replace(MEMORY_READ_HEADER, "")
+  return body
+}
+
+// Two slugs name the same subject when most of the shorter one's words appear in the other, e.g.
+// "safe-temp-latch-design" and "safe-temp-latch-circuit". Single-letter words carry no meaning.
+function slugWords(fileName: string): Set<string> {
+  const slug = fileName.split("/").pop()?.replace(/\.md$/i, "") ?? ""
+  return new Set(
+    slug
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter((word) => word.length > 1),
+  )
+}
+
+export function similarMemoryNames(fileName: string, existing: readonly string[]): string[] {
+  const words = slugWords(fileName)
+  return existing.filter((other) => {
+    const otherWords = slugWords(other)
+    const shared = [...words].filter((word) => otherWords.has(word)).length
+    return shared >= 2 && shared * 2 >= Math.min(words.size, otherWords.size)
+  })
+}
+
 function plural(count: number, singular: string, pluralForm: string): string {
   return `${count} ${count === 1 ? singular : pluralForm}`
 }
@@ -79,8 +115,12 @@ const WRITING_TOOLS: readonly string[] = ["memory_save", "memory_delete"]
 
 export function buildMemoryToolSpecs(
   store: MemoryStore,
-  extraction: Pick<ExtractionCoordinator, "recordSave" | "recordDelete">,
+  extraction: Pick<ExtractionCoordinator, "recordSave" | "recordDelete" | "isExtractionFork">,
 ): MemoryToolSpec[] {
+  // Extraction forks tend to open a second file for a subject that already has one. A new file whose
+  // name resembles an existing memory's is turned back once per fork; the same call repeated is
+  // taken as confirmation that the subject really is different.
+  const similarNameWarned = new Set<string>()
   const specs: MemoryToolSpec[] = [
     {
       name: "memory_save",
@@ -126,12 +166,31 @@ export function buildMemoryToolSpecs(
       },
       async execute(args, ctx) {
         const type = str(args, "type") as MemoryType
+        const fileName = str(args, "file_name")
+        if (extraction.isExtractionFork(ctx.sessionID) && store.read(fileName) === null) {
+          const similar = similarMemoryNames(
+            fileName,
+            store.scan().map((header) => header.filename),
+          )
+          const key = `${ctx.sessionID}\0${fileName}`
+          if (similar.length > 0 && !similarNameWarned.has(key)) {
+            similarNameWarned.add(key)
+            return {
+              title: memorySaveTitle(type, str(args, "title").trim() || str(args, "name")),
+              output:
+                `Not saved: "${fileName}" would be a new memory, but ${similar.map((f) => `"${f}"`).join(", ")} already ` +
+                "exists with a similar name. If it covers the same subject, memory_read it and save the merged content " +
+                "under its existing file_name. Only if the subject is genuinely different, repeat this exact call to " +
+                "create the new memory.",
+            }
+          }
+        }
         const outcome = store.save({
-          fileName: str(args, "file_name"),
+          fileName,
           name: str(args, "name"),
           description: str(args, "description"),
           type,
-          content: str(args, "content"),
+          content: stripMemoryReadHeader(str(args, "content")),
           ...(str(args, "title").trim() ? { title: str(args, "title") } : {}),
         })
         const savedThisRun = extraction.recordSave(ctx.sessionID, outcome.fileName)
@@ -212,7 +271,7 @@ export function buildMemoryToolSpecs(
         if (!entry) return { title: fileName, output: `Memory "${fileName}" not found.` }
         return {
           title: fileName,
-          output: `# ${entry.name}\n**Type:** ${entry.type}\n**Description:** ${entry.description}\n\n${entry.body}`,
+          output: formatMemoryRead(entry),
         }
       },
     },
