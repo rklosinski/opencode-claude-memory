@@ -1,7 +1,8 @@
 # Memory agents follow the session model
 
 Fork: `rklosinski/opencode-claude-memory`, branch `feat/configurable-extraction`.
-Status (2026-11-23): implemented, tested, built to `dist/`, **not committed**.
+Status (2026-11-24): implemented, tested, built to `dist/`, committed as `e09b35e`. Dream unpinned
+2026-11-24 (config only, no code change); its first run on the session model is not yet verified.
 
 ## Problem
 
@@ -30,7 +31,7 @@ working for, at the moment it runs. Sources, in order:
 
 | # | Source | How it is obtained | Why |
 |---|--------|--------------------|-----|
-| 1 | Agent pin | `ctx.agent.get(name).model` | Explicit config always wins (dream keeps one) |
+| 1 | Agent pin | `ctx.agent.get(name).model` | Explicit config always wins (no memory agent is pinned now) |
 | 2 | Session's selected model | `ctx.session.get({sessionID}).model` (`SessionInfo.model`) | Reflects a `/model` switch at once, including that turn's recall |
 | 3 | Model of the session's latest request | Recorded in the `session.hook("context")` handler from `event.model` | Fallback if `session.get` is missing, fails or has no model |
 | 4 | Latest model seen in any session | Same recording, last value overall | A session the plugin has not seen yet |
@@ -39,12 +40,22 @@ working for, at the moment it runs. Sources, in order:
 The parent session is the one being extracted (`parentSessionID`, already passed to
 `runFork`) or the one whose turn is being recalled (already passed to `generate`).
 
-Dream is not tied to one session (it consolidates across sessions), so it stays pinned in
-config. Unpinned, it would get source 4 or 5.
+All three agents are unpinned. Dream consolidates across sessions, but it still has a parent:
+`AutoDream.maybeRun(parentSessionID)` (`src/extraction/autodream.ts`) runs right after a
+successful extraction and passes the extracted session to `runFork`. So dream follows that
+session's model (source 2 or 3), the same as extraction, and falls back to 4 or 5 only when it
+knows nothing about that session.
+
+The first version kept dream pinned to `omlx/Qwen3.8-Flash-Next-instrut`, on the assumption that a
+job not tied to one session has no session model to follow. That assumption was wrong (see
+*Incident: stale dream pin* below), and the pin made dream depend on one particular model
+profile staying in the provider config.
 
 ### Considered and rejected
 
 - **Pin all three agents in config.** Works, but ignores `/model` switches.
+- **Keep dream pinned.** That was the first version. A pin has to be updated by hand whenever
+  that model profile is renamed or removed, and dream failed when it was.
 - **Write the pin when opencode launches** (oc-helpers wrapper). Fixed for the whole session, so
   it misses switches made inside opencode.
 - **Read the model from the parent's message history.** `SessionInfo.model` is the selected
@@ -94,7 +105,7 @@ changed files (the repo-wide `biome ci` already failed before this change).
 "agent": {
   "opencode-memory-extract": {},                                    // follows session
   "opencode-memory-recall":  {},                                    // follows session
-  "opencode-memory-dream":   { "model": "omlx/Qwen3.8-Flash-Next-instrut" }
+  "opencode-memory-dream":   {}                                     // follows session
 },
 "plugins": [{
   "package": "file:///Users/rich/workspace/rck/opencode-claude-memory/dist",
@@ -109,7 +120,26 @@ changed files (the repo-wide `biome ci` already failed before this change).
 - `recall.timeoutMs` stays at 30 s: the turn waits on recall, so a slow model switch just skips
   recall for that turn instead of holding up the reply.
 - Backups: `opencode.json.bak-mempin-*` (before re-pinning), `.bak-memfollow-*` (before
-  unpinning extract and recall), `.bak-extimeout-*` (before the timeout change).
+  unpinning extract and recall), `.bak-extimeout-*` (before the timeout change),
+  `.bak-dreamunpin-*` (before unpinning dream).
+
+## Incident: stale dream pin (2026-11-24)
+
+The `omlx/Qwen3.8-Flash-Next-instrut` model profile was removed from the provider config, on the
+assumption that every memory agent used whichever model was loaded. Dream's pin still named it,
+so dream failed twice ("model isn't loadable on the omlx server"). Extraction and recall were
+unaffected: they were unpinned and logged `omlx/Qwen3.8-Flash-Next` (source: session). One dream
+attempt at 18:53Z also hit the 300 s `autodream.timeoutMs`.
+
+Fix: removed the pin (`"opencode-memory-dream": {}`), then ran `opencode service restart`. A failed
+dream leaves its gate open, so it retries after the next successful extraction.
+
+Lessons:
+- Removing a model profile does not remove pins that name it. Check `agent.opencode-memory-*`
+  before you remove a profile.
+- Processes started before a config change keep the old config. At the time of the fix, an
+  `opencode --standalone` and an `opencode serve --stdio` (2.3.2) from 2026-11-23 were still
+  running, and either could still run dream with the stale pin.
 
 ## Verification (live, temporary `opencode serve` in `/tmp/oc-test`)
 
@@ -134,14 +164,21 @@ memory, which confirmed the expired Zen key as the only cause of the failures.
 1. `bun run build` in this repo (already done for the current changes).
 2. `opencode service restart`, then quit and relaunch any `opencode --standalone` session.
    Processes started before the build still have the old plugin loaded.
-3. Check the log for `Memory agent follows the session model` lines naming the active model.
+3. Check the log for `Memory agent follows the session model` lines naming the active model,
+   for `opencode-memory-extract` and `opencode-memory-recall` after a turn, and for
+   `opencode-memory-dream` after the next consolidation. Pinned agents log no such line, so a dream
+   run without one is still using a pin.
 
 ## Open items
 
 - Re-test a GLM extraction after a model switch with the 300 s timeout.
 - On the first turn after a model switch, recall may time out at 30 s while the new model loads.
   This is accepted for now.
-- Commit, and decide whether to offer this upstream (a session-following fallback is likely useful
+- Verify dream on the session model: the next `Memory agent follows the session model` line for
+  `opencode-memory-dream`, followed by `Auto-dream consolidation completed`.
+- Quit the pre-fix `opencode --standalone` and `opencode serve --stdio` (2.3.2) processes from
+  2026-11-23.
+- Decide whether to offer this upstream (a session-following fallback is likely useful
   to anyone running memory agents without pins).
 - Untracked `src/.ts` (empty) and `src/.vscode/` appeared at 13:41–13:42 on 2026-11-23, around
   the rebuild. Their origin is unknown (a tool run or the editor); check them before committing.
